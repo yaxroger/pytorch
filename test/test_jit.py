@@ -1551,6 +1551,96 @@ graph(%input, %weight):
                    .check('GetAttr[name="_quantized_weight"]') \
                    .run(m._c._get_method('forward').graph)
 
+    @_tmp_donotuse_dont_inline_everything
+    def test_fold_quantize_freeze(self):
+        class M(torch.nn.Module):
+            def __init__(self):
+                super(M, self).__init__()
+                self.weight = torch.nn.Parameter(torch.tensor([2], dtype=torch.float))
+
+            def forward(self, x):
+                return torch.quantize_per_tensor(self.weight, 2.0, 0, torch.quint8)
+
+        m = torch.jit.script(M())
+        torch._C._jit_pass_fold_quantize(m._c, 'forward')
+        m._c = torch._C._jit_pass_freeze_module(m._c);
+        self.assertFalse(m._c.hasattr('_quantized_weight'))
+        FileCheck().check_not('GetAttr[name=') \
+                   .run(m._c._get_method('forward').graph)
+
+    @_tmp_donotuse_dont_inline_everything
+    def test_freeze_module(self):
+        class M(torch.nn.Module):
+            def __init__(self):
+                super(M, self).__init__()
+                self.a = 1         # folded
+                self.b = 1.2       # folded
+                self.c = "hello"   # folded
+                self.d = [1,1]     # folded
+                self.e = [1.0,1.1] # not folded. float[] constant not yet supported
+                self.f = ["hello", "world"]
+                self.g = (1,2)     # not folded. tuple constant not yet supported
+                self.h = {"layer" : "dict"}   # dictionary not supported
+            def forward(self, x):
+                return str(self.a) + str(self.b) + self.c + str(self.d) +\
+                       str(self.e) +  str(self.f) + str( self.g) + self.h['layer']
+
+        m = torch.jit.script(M())
+        input = torch.randn(2,2)
+        output_s = m(input)
+        m._c = torch._C._jit_pass_freeze_module(m._c)
+        self.assertFalse(m._c.hasattr('a'))
+        self.assertFalse(m._c.hasattr('b'))
+        self.assertFalse(m._c.hasattr('c'))
+        self.assertFalse(m._c.hasattr('d'))
+        self.assertTrue(m._c.hasattr('e'))
+        self.assertTrue(m._c.hasattr('f'))
+        self.assertTrue(m._c.hasattr('g'))
+        self.assertTrue(m._c.hasattr('h'))
+        output_f = m(input)
+        self.assertEqual(output_s, output_f)
+
+    def test_freeze_module_with_submodule(self):
+        class SubModule(torch.nn.Module):
+            def __init__(self):
+                super(SubModule, self).__init__()
+                self.a = 11
+                self.b= 2
+            def forward(self, x):
+                return self.a + self.b
+
+        class SubModule2(torch.nn.Module):
+            def __init__(self):
+                super(SubModule2, self).__init__()
+                self.a = 12
+                self.b= 2
+            def forward(self, x):
+                self.b = 30
+                return self.a + self.b
+
+        class TestModule(torch.nn.Module):
+            def __init__(self):
+                super(TestModule, self).__init__()
+                self.sub1 = SubModule()
+                self.sub2 = SubModule2()
+                self.a = 3
+                self.b = 4
+            def forward(self, x):
+                #self.sub.a = 10
+                self.b = 20
+                return self.sub1(x) + self.a + self.b + self.sub2(x)
+
+        m = torch.jit.script(TestModule())
+        input = torch.randn(2,2)
+        output_s = m(input)
+        m._c = torch._C._jit_pass_freeze_module(m._c)
+        self.assertFalse(m._c.hasattr('sub'))
+        self.assertFalse(m._c.hasattr('a'))
+        self.assertTrue(m._c.hasattr('b'))
+        self.assertTrue(m._c.hasattr('sub2'))
+        output_f = m(input)
+        self.assertEqual(output_s, output_f)
+
     @unittest.skipUnless(
         'fbgemm' in torch.backends.quantized.supported_engines,
         " Quantized operations require FBGEMM. FBGEMM is only optimized for CPUs"
