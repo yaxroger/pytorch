@@ -96,14 +96,16 @@ void DistAutogradContext::setGraphTask(
 
 void DistAutogradContext::addOutstandingRpc(
     const std::shared_ptr<rpc::FutureMessage>& futureMessage) {
-  futureMessage->addCallback([this](const rpc::Message& message) {
-    if (message.type() == rpc::MessageType::EXCEPTION) {
-      // If we have an error, let the local autograd engine know about it.
-      std::runtime_error err(
-          std::string(message.payload().begin(), message.payload().end()));
-      graphTask_->set_exception(std::make_exception_ptr(err), nullptr);
-    }
-  });
+  futureMessage->addCallback(
+      [this](
+          const rpc::Message& /* unused */,
+          const c10::optional<utils::FutureError>& futErr) {
+        if (futErr) {
+          // If we have an error, let the local autograd engine know about it.
+          std::runtime_error err((*futErr).what());
+          graphTask_->set_exception(std::make_exception_ptr(err), nullptr);
+        }
+      });
   std::lock_guard<std::mutex> guard(lock_);
   outStandingRpcs_.push_back(futureMessage);
 }
