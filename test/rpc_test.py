@@ -18,6 +18,7 @@ from dist_utils import dist_init
 from torch.distributed.rpc.api import _use_rpc_pickler
 from torch.distributed.rpc.internal import PythonUDF, _internal_rpc_pickler
 from rpc_agent_test_fixture import RpcAgentTestFixture
+from torch._jit_internal import _qualified_name
 
 def requires_process_group_agent(message=""):
     def decorator(old_func):
@@ -656,6 +657,16 @@ class RpcTest(RpcAgentTestFixture):
         fut = rpc.rpc_async("worker{}".format(dst_rank), raise_func)
         with self.assertRaisesRegex(Exception, "ValueError"):
             fut.wait()
+
+    @dist_init
+    def test_script_function_exception(self):
+        @torch.jit.script
+        def no_result():
+            print("do nothing")
+        n = self.rank + 1
+        dst_rank = n % self.world_size
+        with self.assertRaisesRegex(Exception, "no_result"):
+            ret = rpc._rpc_sync("worker{}".format(dst_rank), _qualified_name(no_result), args=(10,))
 
     @dist_init
     def test_nested_rpc(self):
